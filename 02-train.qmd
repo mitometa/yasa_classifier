@@ -1,0 +1,180 @@
+---
+title: "Train classifier"
+format: html
+editor: visual
+jupyter: python3
+---
+
+```{python read-data}
+import os
+import numpy as np
+from pathlib import Path
+import pandas as pd
+
+root_folder = os.path.join(os.getcwd(),"24-hour_recordings")
+# find the paths
+all_feature_csv = list(Path(root_folder).glob('**/*/*features.csv'))
+# read them
+df_list = [pd.read_csv(path) for path in all_feature_csv]
+df = pd.concat(df_list, axis=0, ignore_index=True, sort=False)
+
+```
+
+```{python quality-control}
+print("Checking for NAs")
+df.isna().sum().sum()
+y = df["stage"]
+# drop stage
+df.drop(["stage"], axis=1, inplace=True)
+```
+
+### Predictors
+
+```{python}
+df.columns
+```
+
+### Params
+
+REM has way fewer samples than the rest, around 5 fold.
+
+```{python class-imbalance-plot}
+import matplotlib.pyplot as plt
+y.map({4:"REM", 2: "NREM", 0:"Awake"}).value_counts(normalize=True).plot.barh()
+plt.xlabel("Sleep Stage")
+plt.ylabel("Proportion")
+plt.show()
+```
+
+We will deal with class imbalance by computing custom weights.
+
+```{python params-class-imbalance}
+# Define hyper-parameters
+params = dict(
+    boosting_type='gbdt',
+    n_estimators=400,
+    max_depth=5,
+    num_leaves=90,
+    colsample_bytree=0.5,
+    importance_type='gain',
+)
+
+from sklearn.utils.class_weight import compute_class_weight
+# compute class weights
+# these will be in the order 
+# 0: "Wake", 2: "NREM", 4:"REM"
+# This takes a while so it was saved for later purposes
+recompute = False
+if recompute:
+  numeric_weights = compute_class_weight(
+    class_weight ='balanced',
+    classes=np.unique(y), 
+    y=y)
+else:
+  numeric_weights = [0.6464329605333303,
+                     0.7942784646041191,
+                     5.153446964613251
+                    ]
+class_weight_dict = dict(zip([0, 2, 4], numeric_weights))
+
+# Manually define class weight
+# class_weight = None
+# class_weight = "balanced"
+class_weight = "custom"
+
+if class_weight == "custom":
+    # See output/classifiers/gridsearch_class_weights.xlsx
+    # params['class_weight'] = {'N1': 2.2, 'N2': 1, 'N3': 1.2, 'R': 1.4, 'W': 1}
+    params["class_weight"] = class_weight_dict
+else:
+    params['class_weight'] = class_weight
+
+
+```
+
+Select columns of the dataset to train models that use `eeg` or `eeg+emg` data.
+
+```{python}
+
+# Change columns to float32
+cols_float = df.select_dtypes(np.float64).columns.tolist()
+df[cols_float] = df[cols_float].astype(np.float32)
+
+cols_all = df.columns
+# We are not considering time here
+# cols_time = cols_all[cols_all.str.startswith('time_')].tolist()
+cols_eeg = cols_all[cols_all.str.startswith('eeg_')].tolist() # + cols_time  # EEG also includes the time columns
+cols_emg = cols_all[cols_all.str.startswith('emg_')].tolist()
+
+# Define predictors
+X_all = {
+    'eeg': df[cols_eeg],
+    'eeg+emg': df[cols_eeg + cols_emg],
+}
+
+# Define target and groups
+#y = df['stage']
+#subjects
+```
+
+## Train
+
+```{python train}
+import joblib
+from tqdm.notebook import tqdm
+from lightgbm import LGBMClassifier
+parent_dir = os.getcwd()
+outdir = parent_dir + "/output/classifiers/"
+if not os.path.isdir(outdir):
+  os.makedirs(outdir)
+
+# Parallel processing when building the trees.
+params['n_jobs'] = 8
+
+# Loop across combs of predictors
+for name, X in tqdm(X_all.items()):
+  # Fit
+  clf = LGBMClassifier(**params)
+  clf.fit(X, y)
+  # Print the accuracy on the training dataset: shouldn't be too high..!
+  print("%s (%i features) - training accuracy: %.3f" % 
+      (name, X.shape[1], clf.score(X, y)))
+  
+  # Export trained classifier
+  if params['class_weight'] is not None:
+      fname = outdir + 'clf_%s_lgb_%s_%s.joblib' % \
+      (name, params['boosting_type'], class_weight)
+  else:
+      fname = outdir + 'clf_%s_lgb_%s.joblib' % \
+      (name, params['boosting_type'])
+      
+  # Export model
+  joblib.dump(clf, fname, compress=True)
+  
+  # Also save directly to YASA
+  # outdir_yasa = "/Users/raphael/GitHub/yasa/yasa/classifiers/"
+  # fname_yasa = outdir_yasa + 'clf_%s_lgb.joblib' % name
+  # joblib.dump(clf, fname_yasa, compress=True)
+  
+  # Features importance (full model only)
+  # Export LGBM feature importance
+  df_imp = pd.Series(clf.feature_importances_, 
+                     index=clf.feature_name_, 
+                     name='Importance').round()
+  df_imp.sort_values(ascending=False, inplace=True)
+  df_imp.index.name = 'Features'
+  df_imp.to_csv(fname[:-7] + ".csv")
+
+
+
+```
+
+      0%|          | 0/2 [00:00<?, ?it/s]
+    LGBMClassifier(class_weight={0: 0.6464329605333303, 2: 0.7942784646041191,4: 5.153446964613251},colsample_bytree=0.5, importance_type='gain', max_depth=5, n_estimators=400, n_jobs=8, num_leaves=90)
+    eeg (63 features) - training accuracy: 0.952
+    ['/home/matias/Dropbox (MIT)/Matias_Choi_Lab/analysis_pipelines/sleep_data_AccuSleep/output/classifiers/clf_eeg_lgb_gbdt_custom.joblib']
+
+    LGBMClassifier(class_weight={0: 0.6464329605333303, 2: 0.7942784646041191,4: 5.153446964613251},
+    colsample_bytree=0.5, importance_type='gain', max_depth=5,n_estimators=400, n_jobs=8, num_leaves=90)
+    eeg+emg (96 features) - training accuracy: 0.972
+    ['/home/matias/Dropbox (MIT)/Matias_Choi_Lab/analysis_pipelines/sleep_data_AccuSleep/output/classifiers/clf_eeg+emg_lgb_gbdt_custom.joblib']

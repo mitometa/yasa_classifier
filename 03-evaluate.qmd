@@ -1,0 +1,308 @@
+---
+title: "Sleep Stage Prediction & Evaluation"
+format: html
+editor: visual
+jupyter: python3
+execute:
+  echo: false
+  warning: false
+format:
+  html:
+    code-fold: true
+    code-summary: "Show the code"
+---
+
+## Dataset Origin
+
+The dataset was collected from [OSF](https://osf.io/py5eb/). It contains mouse EEG/EMG recordings (sampling rate: 512 Hz) and sleep stage labels (epoch length: 2.5 sec).
+
+Training was performed using extracted features from 24h recordings.
+
+## Evaluation
+
+Evaluation is performed using 4h recordings that were not used for training.
+
+```{python imports-globals}
+import yasa
+from staging import SleepStaging
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from scipy.io import loadmat
+import pandas as pd
+import mne
+from mne.io import RawArray
+from sklearn.metrics import cohen_kappa_score
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+
+sf = 512 #Hz
+epoch_len = 2.5 #sec
+
+root_folder = os.path.join(os.getcwd())
+
+def get_files(target_folder):
+  eeg_file = os.path.join(target_folder, "EEG.mat")
+  emg_file = os.path.join(target_folder, "EMG.mat")
+  label_file = os.path.join(target_folder, "labels.mat")
+  
+  file_list = ["EEG.mat", "EMG.mat", "labels.mat"]
+  full_file_list = list(
+    map(lambda x: os.path.join(target_folder, x), 
+        file_list)
+  )
+  
+  paths_are_files = list(
+    map(lambda x: os.path.isfile(x),
+        full_file_list)
+  )
+  if not all(paths_are_files):
+    raise FileNotFoundError
+  # load files
+  eeg = loadmat(eeg_file)
+  emg = loadmat(emg_file)
+  label = loadmat(label_file)
+  # yasa values for hypnogram
+  #* -2  = Unscored
+  #* -1  = Artefact / Movement
+  #* 0   = Wake
+  #* 1   = N1 sleep
+  #* 2   = N2 sleep
+  #* 3   = N3 sleep
+  #* 4   = REM sleep
+  # arrange into proper shape
+  accusleep_dict = {
+    1:4,#"R",
+    2:0,#"W",
+    3:2,#"N"
+  }
+  # reshape everything to singleton
+  label = np.squeeze(label["labels"])
+  eeg_array = np.squeeze(eeg["EEG"])
+  emg_array = np.squeeze(emg["EMG"])
+  # re-map the label values
+  label_df = pd.DataFrame({"label": label})
+  label_df["label"] = label_df["label"].map(accusleep_dict)
+  label_array = label_df["label"].values
+  return eeg_array, emg_array, label_array
+
+
+def predict_mouse(mouse_folder):
+  eeg, emg, true_labels = get_files(mouse_folder)
+  info =  mne.create_info(["eeg","emg"], 
+                          sf, 
+                          ch_types='misc', 
+                          verbose=False)
+  raw_array = RawArray(np.vstack((eeg, 
+                                  emg)),
+                       info, verbose=False)
+  sls = SleepStaging(raw_array,
+                     eeg_name="eeg", 
+                     emg_name="emg")
+  # this will use the new fit function
+  sls.fit(epoch_sec=2.5)
+  # the auto will use these features
+  # "/home/matias/anaconda3/lib/python3.7/site-packages/yasa/classifiers/clf_eeg+emg_lgb_0.5.0.joblib"
+  predicted_labels = sls.predict(path_to_model="output/classifiers/clf_eeg+emg_lgb_gbdt_custom.joblib")
+#np.save("predicted_labels.npy", predicted_labels)
+  return sls, true_labels
+
+def plot_spectrogram(eeg, hypno):
+  # upsample to data
+  label_df = yasa.hypno_upsample_to_data(hypno,
+  sf_hypno=1/2.5, 
+  data=eeg, sf_data=sf)
+  fig = yasa.plot_spectrogram(eeg,
+                      hypno=label_df, 
+                      win_sec = 10,
+                      sf=sf,
+                      # default is 'RdBu_r'
+                      # cmap='Spectral_r',
+                      # manage the scale contrast,     larger values better contrast
+                      trimperc = 1)
+  fig.show()
+
+def plot_eeg_sample(eeg, n=1000):
+  plt.figure()
+  plt.plot(eeg[1:n], "k-")
+  plt.show()
+  plt.close()
+
+def evaluate(predicted_labels, true_labels, plot_cm=False):
+  # convert labels to string
+  predicted_labels_string = yasa.hypno_int_to_str(predicted_labels)
+  true_labels_string = yasa.hypno_int_to_str(true_labels)
+  # Get labels in the order that they will show in cm
+  cm_labels = yasa.hypno_int_to_str(np.unique(true_labels))
+  
+  from sklearn.metrics import accuracy_score
+  accuracy = accuracy_score(
+    y_true = true_labels_string,
+    y_pred = predicted_labels_string
+    )
+  
+  cohen_kappa = cohen_kappa_score(
+    predicted_labels, true_labels)
+  print(f"Cohen's Kappa: {cohen_kappa}")
+  cm = confusion_matrix(predicted_labels, true_labels)
+  if plot_cm:
+    ax=plt.subplot()
+    sns.heatmap(cm/np.sum(cm), annot=True, 
+                fmt='.2%', cmap='Blues')
+    # labels, title and ticks
+    ax.set_xlabel('Predicted labels')
+    ax.set_ylabel('True labels') 
+    ax.set_title('Confusion Matrix') 
+    ax.xaxis.set_ticklabels(cm_labels) 
+    ax.yaxis.set_ticklabels(cm_labels)
+    plt.show()
+    plt.close()
+  return accuracy, cm, cohen_kappa
+
+```
+
+```{python}
+# Build the paths
+from pathlib import Path
+all_paths = list(Path(root_folder).glob('4-hour_recordings/*/**'))
+all_dirs = sorted([folder for folder in all_paths if folder.is_dir() and "Day" in str(folder)])
+print(f"Total recordings {len(all_dirs)}")
+```
+
+Jump to global evaluation
+
+### Individual mouse evaluation
+
+```{python}
+#| eval: false
+import time
+#mouse_folder = os.path.join(root_folder, "4-hour_recordings/Mouse01/Day1/"
+cm_list = []
+cohen_list = []
+accu_list = []
+prediction_time = []
+
+for mouse_folder in all_dirs:
+  start_time = time.time()
+  mouse, true_labels = predict_mouse(mouse_folder)
+  end_time = time.time()
+  accuracy, cm, cohen = evaluate(mouse._predicted, true_labels)
+  # apend to lists
+  accu_list.append(accuracy)
+  cm_list.append(cm)
+  cohen_list.append(cohen)
+  time_per_label = (end_time - start_time)/len(true_labels)
+  prediction_time.append(time_per_label)
+  del(mouse)
+  del(true_labels)
+  
+```
+
+```{python}
+#| eval: false
+# save outputs
+np.save("output/cm_list.npy", cm_list)
+np.savetxt("output/accu_list.csv", accu_list)
+np.savetxt("output/cohen_list.csv", cohen_list)
+np.savetxt("output/prediction_time.csv", prediction_time)
+```
+
+### Global Evaluation
+
+We can potentially evaluate the performance of the model from averaging all confusion matrices.
+
+```{python cm-mean}
+plt.style.use("dark_background")
+# average all cm
+cm_list = np.load("output/cm_list.npy")
+cm_mean = np.mean(cm_list, axis=0)
+cm_sd = np.std(cm_list, axis=0)
+fig = plt.figure()
+ax=plt.subplot()
+sns.heatmap(cm_mean/np.sum(cm_mean), annot=True, 
+            fmt='.2%', cmap='Blues')
+# labels, title and ticks
+ax.set_xlabel('Predicted labels')
+ax.set_ylabel('True labels') 
+ax.set_title('Average Confusion Matrix') 
+ax.xaxis.set_ticklabels(["W", "NREM", "REM"]) 
+ax.yaxis.set_ticklabels(["W", "NREM", "REM"])
+plt.show()
+plt.close()
+```
+
+```{python cm-mean-sem}
+plt.style.use("dark_background")
+# average all cm
+cm_mean = np.mean(cm_list, axis=0)
+cm_sem = np.std(cm_list, axis=0)/np.sqrt(50)
+annot = np.empty_like(cm_mean).astype(str)
+nrows, ncols = cm_mean.shape
+for i in range(nrows):
+    for j in range(ncols):
+        c = np.floor(cm_mean[i, j])
+        p = np.floor(cm_sem[i, j])
+        annot[i, j] = f'{c}\n±{p}'#'%.1f%%\n%d' % (c, p)
+        
+cm = pd.DataFrame(cm_mean, 
+                  index=["W", "NREM", "REM"], 
+                  columns=["W", "NREM", "REM"])
+cm.index.name = 'True Label'
+cm.columns.name = 'Predicted Label'
+fig, ax = plt.subplots()
+sns.heatmap(cm, annot=annot, fmt='', ax=ax)
+plt.title('Average Confusion Matrix\nMean ± SEM cases.')
+#plt.savefig(filename)
+plt.show()
+```
+
+```{python global-cohen-plot}
+cohen_list=np.load("output/cohen_list.npy")
+plt.figure()
+sns.distplot(cohen_list, bins=40)
+plt.title("Cohen's Kappa Distribution")
+plt.xlabel("Cohen's Kappa")
+plt.ylabel("Frequency")
+plt.show()
+plt.close()
+```
+
+### Representative Example
+
+```{python}
+mouse, true_labels = predict_mouse(all_dirs[0])
+
+```
+
+```{python}
+plt.style.use("ggplot")
+plot_eeg_sample(mouse.data[0], n=150)
+```
+
+```{python}
+plt.style.use("dark_background")
+fig = yasa.plot_spectrogram(mouse.data[0],
+                      hypno=None, 
+                      win_sec = 10,
+                      sf=sf,
+                      # default is 'RdBu_r'
+                      # cmap='Spectral_r',
+                      # manage the scale contrast,     larger values better contrast
+                      trimperc = 1)
+fig.show()
+```
+
+```{python}
+plt.style.use("ggplot")
+yasa.plot_hypnogram(true_labels[100:350], sf_hypno=1/2.5)
+plt.title("True Sleep Stages")
+plt.show()
+```
+
+```{python}
+plt.style.use("ggplot")
+yasa.plot_hypnogram(mouse._predicted[100:350], sf_hypno=1/2.5)
+plt.title("Predicted Sleep Stages")
+plt.show()
+```

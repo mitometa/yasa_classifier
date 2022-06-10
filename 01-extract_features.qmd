@@ -1,0 +1,196 @@
+---
+title: "Extract Features 24h"
+format: html
+editor: visual
+jupyter: python3
+---
+
+## Dataset structure
+
+Datasets have the following structure
+
+    .
+    ├── Mouse01
+    │   ├── Day1_dark_cycle
+    │   │   ├── EEG.mat
+    │   │   ├── EMG.mat
+    │   │   └── labels.mat
+    │   ├── Day1_light_cycle
+    │   │   ├── EEG.mat
+    │   │   ├── EMG.mat
+    │   │   └── labels.mat
+    │   ├── Day2_dark_cycle
+    │   │   ├── EEG.mat
+    │   │   ├── EMG.mat
+    │   │   └── labels.mat
+    │   └── Day2_light_cycle
+    │       ├── EEG.mat
+    │       ├── EMG.mat
+    │       └── labels.mat
+
+We want to cycle through and:
+
+1.  read EEG/EMG/label files
+2.  remap the labels to strings
+3.  pass features to `SleepStaging()`
+4.  get features with `yasa_fit(epoch_sec=2.5, bands=None)`
+5.  get features with `yasa_fit(epoch_sec=2.5, bands=custom)`
+6.  save features
+
+### Read EEG/EMG/label files
+
+```{python}
+import yasa
+import matplotlib.pyplot as plt
+import numpy as np
+import os
+from scipy.io import loadmat
+import pandas as pd
+sf = 512 #Hz
+epoch_len = 2.5 #sec
+
+root_folder = os.path.join(os.getcwd(),              "24-hour_recordings")
+
+def get_files(target_folder):
+  eeg_file = os.path.join(target_folder, "EEG.mat")
+  emg_file = os.path.join(target_folder, "EMG.mat")
+  label_file = os.path.join(target_folder, "labels.mat")
+  
+  file_list = ["EEG.mat", "EMG.mat", "labels.mat"]
+  full_file_list = list(
+    map(lambda x: os.path.join(target_folder, x), 
+        file_list)
+  )
+  
+  paths_are_files = list(
+    map(lambda x: os.path.isfile(x),
+        full_file_list)
+  )
+  if not all(paths_are_files):
+    raise FileNotFoundError
+  # load files
+  eeg = loadmat(eeg_file)
+  emg = loadmat(emg_file)
+  label = loadmat(label_file)
+  # yasa values for hypnogram
+  #* -2  = Unscored
+  #* -1  = Artefact / Movement
+  #* 0   = Wake
+  #* 1   = N1 sleep
+  #* 2   = N2 sleep
+  #* 3   = N3 sleep
+  #* 4   = REM sleep
+  # arrange into proper shape
+  accusleep_dict = {
+    1:4,#"R",
+    2:0,#"W",
+    3:2,#"N"
+  }
+  # reshape everything to singleton
+  label = np.squeeze(label["labels"])
+  eeg_array = np.squeeze(eeg["EEG"])
+  emg_array = np.squeeze(emg["EMG"])
+  # re-map the label values
+  label_df = pd.DataFrame({"label": label})
+  label_df["label"] = label_df["label"].map(accusleep_dict)
+  label_array = label_df["label"].values
+  return eeg_array, emg_array, label_array
+  
+```
+
+```{python}
+# Build the paths
+from pathlib import Path
+p = Path(root_folder)
+all_paths = list(Path(root_folder).glob('**/*'))
+# This is for the 24 hour
+all_dirs = sorted([folder for folder in all_paths if folder.is_dir() and "cycle" in str(folder)])
+# This is for the 4-hour
+#all_dirs = sorted([folder for folder in all_paths if folder.is_dir()])
+
+```
+
+```{python}
+# check for lenghts of labels
+file_dict = {}
+for directory in all_dirs:
+  try:
+    eeg, emg, labels = get_files(directory)
+    file_dict[directory] = {
+      "Folder": directory.parts[-3:],
+      "EEG_shape": eeg.shape,
+      "EEG_epochs": eeg.shape[0]/(sf * epoch_len),
+      "EMG_shape": emg.shape,
+      "EMG_epoch": emg.shape[0]/(sf * epoch_len),
+      "labels_len": len(labels)
+    }
+  except:
+    continue
+
+
+```
+
+```{python}
+pd.DataFrame(file_dict).T.to_csv("file_lengths.csv", index=None)
+```
+
+```{python}
+import mne
+from mne.io import RawArray
+# this is my custom version of sleep staging
+from staging import SleepStaging
+
+# we need to inlcude these because there will be key error
+custom_bands =  [
+          (0.4, 1, 'sdelta'), 
+          (1, 4, 'fdelta'), 
+          (5, 11, 'theta'),
+          (8, 12, 'alpha'), 
+          (12, 16, 'sigma'), 
+          (16, 30, 'beta')
+      ]
+
+# try to read
+for directory in all_dirs:
+  try:
+    eeg, emg, labels = get_files(directory)
+    # try to read
+    print(f'Data read from {directory}')
+    # Create array
+    info =  mne.create_info(["eeg","emg"], 
+                            sf, 
+                            ch_types='misc', 
+                            verbose=False)
+    raw_array = RawArray(np.vstack((eeg, 
+                                    emg)),
+                                    info, verbose=False)
+    #print("Creating Staging Class")
+    sls = SleepStaging(raw_array,
+                       eeg_name="eeg", 
+                       emg_name="emg")
+    # this will use the new fit function
+    sls.fit(epoch_sec=2.5)
+    print("Fit default bands finished")
+    features = sls.get_features()
+    # deal with label issues
+    if features.shape[0] - len(labels) == 1:
+      labels = np.append(labels, 0)
+    features["stage"] = labels
+    #sls.fit(epoch_sec=2.5, bands=custom_bands)
+    #features_custom = sls.get_features()
+    # save the stuff
+    features.to_csv(os.path.join(directory,"features.csv"),
+                    index=None)
+    #features_custom.to_csv(os.path.join(directory,
+    #                                   "features_custom.csv"),# 
+  #                        index=None)
+  #np.save(os.path.join(directory, "labels.npy"), labels)
+  except:
+    print("Error happened")
+    continue
+
+```
+
+```{python}
+
+```
