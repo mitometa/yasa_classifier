@@ -277,6 +277,8 @@ class SleepStaging:
                 feat['ds'] = delta / feat['sigma']
                 feat['db'] = delta / feat['beta']
                 feat['at'] = feat['alpha'] / feat['theta']
+                feat['tb'] = feat['theta'] / feat['beta']
+                feat['td'] = feat['theta'] / delta
     
             # Add total power
             idx_broad = np.logical_and(freqs >= freq_broad[0], freqs <= freq_broad[1])
@@ -289,6 +291,8 @@ class SleepStaging:
             feat['higuchi'] = np.apply_along_axis(
                 ant.higuchi_fd, axis=1, arr=epochs)
             feat['petrosian'] = ant.petrosian_fd(epochs, axis=1)
+            feat['svd'] = np.apply_along_axis(
+                ant.svd_entropy, axis=1, arr=epochs, normalize=True)
     
             # Convert to dataframe
             feat = pd.DataFrame(feat).add_prefix(c + '_')
