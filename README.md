@@ -38,8 +38,9 @@ Datasets have the following structure
 
 `01-extract_features.qmd` was run to extract features. An important note is that it uses a local version of `SleepStaging()` (`from staging import SleepStaging`) that differs from the implementation in `yasa`. This was included for reproducibility, though we have plans to include this version in `yasa` itself and will be no longer needed.
 
-update1: resample mouse EEG/EMG recordings to 100 Hz for training to save time 
-update2: add extra features in staging.py, such as power ratios of EEG and SVD entropy 
+update1: resample mouse EEG/EMG recordings to 100 Hz for training to save time. 
+
+update2: add extra features in staging.py, such as power ratios of EEG and SVD entropy. 
 
 ### Train the model
 
