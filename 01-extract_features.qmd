@@ -164,6 +164,8 @@ for directory in all_dirs:
     raw_array = RawArray(np.vstack((eeg, 
                                     emg)),
                                     info, verbose=False)
+    # resampled to 100 Hz to save time
+    raw_array = raw_array.resample(100)
     #print("Creating Staging Class")
     sls = SleepStaging(raw_array,
                        eeg_name="eeg", 
