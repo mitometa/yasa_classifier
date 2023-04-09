@@ -38,6 +38,8 @@ Datasets have the following structure
 
 `01-extract_features.qmd` was run to extract features. An important note is that it uses a local version of `SleepStaging()` (`from staging import SleepStaging`) that differs from the implementation in `yasa`. This was included for reproducibility, though we have plans to include this version in `yasa` itself and will be no longer needed.
 
+update: resample mouse EEG/EMG recordings to 100 Hz for training to save time 
+
 ### Train the model
 
 `02-train.qmd` was run to train on the 24 hour recordings. The outputs of this notebook are saved into `/output`. 
