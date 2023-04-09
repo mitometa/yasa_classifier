@@ -165,6 +165,8 @@ for directory in all_dirs:
                                     emg)),
                                     info, verbose=False)
     #print("Creating Staging Class")
+    # resample to 100 Hz to save time and match the resampling frequency of mne and visbrain
+    raw_array = raw_array.resample(100)
     sls = SleepStaging(raw_array,
                        eeg_name="eeg", 
                        emg_name="emg")
